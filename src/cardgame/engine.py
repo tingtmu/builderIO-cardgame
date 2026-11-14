@@ -15,6 +15,10 @@ same seed and the same sequence of actions always produce the same battle.
 
 Effects are dispatched by ``EffectKind`` through ``EFFECT_HANDLERS``. The engine
 never looks at card ids, so adding a card is a data change only.
+
+Enemy behaviour (M4) is ``AIDef`` data on the enemy unit. ``EnemyBrain`` picks
+each enemy card. The pick is made one turn ahead, so ``Battle.enemy_intent``
+can show the player what the enemy will do when the AI reveals its intent.
 """
 
 from __future__ import annotations
@@ -25,6 +29,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from fractions import Fraction
 
+from cardgame.ai import EnemyBrain
 from cardgame.loader import load_statuses
 from cardgame.models import (
     Card,
@@ -84,6 +89,9 @@ class Battle:
             for status in unit.statuses:
                 self.status_def(status.id)  # fail early on unknown initial statuses
         self.rng.shuffle(self.draw_pile)
+        self._brain = EnemyBrain(enemy.ai) if enemy.ai is not None else None
+        # The enemy card chosen for its next action; None if the enemy has no AI.
+        self._intent: Card | None = None
 
     # ----- state queries -------------------------------------------------
 
@@ -99,6 +107,19 @@ class Battle:
             return self.enemy.id
         return None
 
+    @property
+    def enemy_intent(self) -> Card | None:
+        """The card the enemy will play at the end of this turn, if it reveals its intent.
+
+        None when the enemy has no AI, its AI hides intent, the battle has not
+        started, or the battle is over.
+        """
+        if self._brain is None or self._intent is None or not self._brain.definition.reveal_intent:
+            return None
+        if self.over:
+            return None
+        return self._intent
+
     def status_def(self, status_id: str) -> StatusDef:
         try:
             return self.status_defs[status_id]
@@ -108,10 +129,12 @@ class Battle:
     # ----- actions -------------------------------------------------------
 
     def start(self) -> None:
-        """Begin turn 1: refill energy and draw the opening hand."""
+        """Begin turn 1: refill energy, draw the opening hand, and pick the enemy's first action."""
         if self.turn != 0:
             raise BattleError("battle already started")
         self._begin_turn()
+        if self._brain is not None:
+            self._intent = self._brain.next_card(self.rng)
 
     def play_card(self, index: int) -> None:
         """Play the card at ``index`` in hand and resolve its effects."""
@@ -161,18 +184,18 @@ class Battle:
         self._expire_owner_turn_start(self.enemy)
 
     def _enemy_act(self) -> None:
-        # Placeholder AI (real enemy AI is M4): refill energy, then play one
-        # random card from the deck that the energy can pay for.
+        # Play the intent picked last turn (affordability is checked when the unit is built),
+        # then pick the next intent so the player can read it.
         enemy = self.enemy
         enemy.energy = enemy.max_energy
-        affordable = [card for card in enemy.deck if card.cost <= enemy.energy]
-        if not affordable:
+        if self._brain is None or self._intent is None:
             return
-        card = self.rng.choice(affordable)
+        card = self._intent
         enemy.energy -= card.cost
         self._log("enemy_play", enemy.id, detail=card.id)
         for effect in card.effects:
             self._resolve(effect, source=enemy, target=self.player)
+        self._intent = self._brain.next_card(self.rng)
 
     def _settle_statuses(self) -> None:
         self._log("status_settle", self.player.id)

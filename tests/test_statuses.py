@@ -6,10 +6,13 @@ import pytest
 from cardgame.engine import SHIELD_STATUS_ID, Battle, BattleError
 from cardgame.loader import CARDS_FILE, STATUSES_FILE, load_cards, load_statuses
 from cardgame.models import (
+    AIAction,
+    AIDef,
     Card,
     CardDataError,
     Effect,
     EffectKind,
+    EnemyAIKind,
     Status,
     StatusDef,
     StatusLifetime,
@@ -41,13 +44,19 @@ def card(card_id, cost, *effects):
     return Card(id=card_id, name=card_id, cost=cost, effects=tuple(effects))
 
 
-def unit(unit_id, max_hp=50, max_energy=3, deck=()):
-    return Unit(id=unit_id, name=unit_id, max_hp=max_hp, max_energy=max_energy, deck=list(deck))
+def sequence_ai(cards):
+    if not cards:
+        return None
+    return AIDef(kind=EnemyAIKind.SEQUENCE, actions=tuple(AIAction(card=c) for c in cards))
 
 
-def make_battle(player_deck, enemy_deck=(), seed=0, hand_size=5, statuses=None):
+def unit(unit_id, max_hp=50, max_energy=3, deck=(), ai=None):
+    return Unit(id=unit_id, name=unit_id, max_hp=max_hp, max_energy=max_energy, deck=list(deck), ai=ai)
+
+
+def make_battle(player_deck, enemy_actions=(), seed=0, hand_size=5, statuses=None):
     player = unit("player", deck=player_deck)
-    enemy = unit("enemy", max_hp=30, max_energy=2, deck=enemy_deck)
+    enemy = unit("enemy", max_hp=30, max_energy=2, ai=sequence_ai(enemy_actions))
     return Battle(player, enemy, seed=seed, hand_size=hand_size, statuses=statuses)
 
 
@@ -190,7 +199,7 @@ def test_poison_can_kill_enemy_and_ends_battle_with_player_winning():
 
 
 def test_poison_can_kill_player_and_enemy_wins():
-    battle = make_battle([card("a", 0, dmg(1))], enemy_deck=[])
+    battle = make_battle([card("a", 0, dmg(1))], enemy_actions=[])
     battle.start()
     battle.player.hp = 2
     battle.player.statuses.append(Status(id="poison", name="中毒", stacks=2, duration=2))
@@ -201,7 +210,7 @@ def test_poison_can_kill_player_and_enemy_wins():
 
 
 def test_poison_death_stops_settling_the_other_units_statuses():
-    battle = make_battle([card("a", 0, dmg(1))], enemy_deck=[])
+    battle = make_battle([card("a", 0, dmg(1))], enemy_actions=[])
     battle.start()
     battle.player.hp = 2
     battle.player.statuses.append(Status(id="poison", name="中毒", stacks=2, duration=2))
@@ -225,7 +234,7 @@ def test_poison_applied_twice_stacks_its_damage():
 
 
 def test_weak_reduces_damage_dealt_by_the_afflicted_enemy_to_three_quarters():
-    battle = make_battle([card("hex", 0, weak(1, 2))], enemy_deck=[card("hit", 0, dmg(8))])
+    battle = make_battle([card("hex", 0, weak(1, 2))], enemy_actions=[card("hit", 0, dmg(8))])
     battle.start()
     battle.play_card(0)
     battle.end_turn()
@@ -234,7 +243,7 @@ def test_weak_reduces_damage_dealt_by_the_afflicted_enemy_to_three_quarters():
 
 @pytest.mark.parametrize("raw, expected", [(6, 4), (5, 3), (4, 3), (3, 2), (1, 0)])
 def test_weak_rounds_damage_down(raw, expected):
-    battle = make_battle([card("hex", 0, weak(1, 2))], enemy_deck=[card("hit", 0, dmg(raw))])
+    battle = make_battle([card("hex", 0, weak(1, 2))], enemy_actions=[card("hit", 0, dmg(raw))])
     battle.start()
     battle.play_card(0)
     battle.end_turn()
@@ -258,7 +267,7 @@ def test_weak_on_the_player_reduces_the_players_own_damage():
 
 
 def test_weak_does_not_reduce_shield_gained_by_the_afflicted_unit():
-    battle = make_battle([card("hex", 0, weak(1, 2))], enemy_deck=[card("guard", 0, shield(4))])
+    battle = make_battle([card("hex", 0, weak(1, 2))], enemy_actions=[card("guard", 0, shield(4))])
     battle.start()
     play_by_id(battle, "hex")
     battle.end_turn()
@@ -268,7 +277,7 @@ def test_weak_does_not_reduce_shield_gained_by_the_afflicted_unit():
 
 
 def test_weak_expires_after_its_duration_and_full_damage_returns():
-    battle = make_battle([card("hex", 0, weak(1, 1))], enemy_deck=[card("hit", 0, dmg(8))], hand_size=1)
+    battle = make_battle([card("hex", 0, weak(1, 1))], enemy_actions=[card("hit", 0, dmg(8))], hand_size=1)
     battle.start()
     battle.play_card(0)
     battle.end_turn()
@@ -279,7 +288,7 @@ def test_weak_expires_after_its_duration_and_full_damage_returns():
 
 
 def test_weak_does_not_tick_stacks_down():
-    battle = make_battle([card("hex", 0, weak(3, 2))], enemy_deck=[card("hit", 0, dmg(8))])
+    battle = make_battle([card("hex", 0, weak(3, 2))], enemy_actions=[card("hit", 0, dmg(8))])
     battle.start()
     battle.play_card(0)
     battle.end_turn()
@@ -291,7 +300,7 @@ def test_weak_does_not_tick_stacks_down():
 
 
 def test_player_shield_absorbs_enemy_attack_in_the_same_round():
-    battle = make_battle([card("guard", 0, shield(10))], enemy_deck=[card("hit", 0, dmg(4))])
+    battle = make_battle([card("guard", 0, shield(10))], enemy_actions=[card("hit", 0, dmg(4))])
     battle.start()
     battle.play_card(0)
     battle.end_turn()
@@ -300,7 +309,7 @@ def test_player_shield_absorbs_enemy_attack_in_the_same_round():
 
 
 def test_unused_player_shield_expires_when_owner_next_turn_begins():
-    battle = make_battle([card("guard", 0, shield(10))], enemy_deck=[card("hit", 0, dmg(4))])
+    battle = make_battle([card("guard", 0, shield(10))], enemy_actions=[card("hit", 0, dmg(4))])
     battle.start()
     battle.play_card(0)
     battle.end_turn()
@@ -309,7 +318,7 @@ def test_unused_player_shield_expires_when_owner_next_turn_begins():
 
 
 def test_expired_shield_does_not_absorb_the_next_enemy_attack():
-    battle = make_battle([card("guard", 0, shield(10))], enemy_deck=[card("hit", 0, dmg(4))])
+    battle = make_battle([card("guard", 0, shield(10))], enemy_actions=[card("hit", 0, dmg(4))])
     battle.start()
     battle.play_card(0)
     battle.end_turn()  # hit absorbed; 6 stacks left, then the shield expires at turn 2
@@ -318,7 +327,7 @@ def test_expired_shield_does_not_absorb_the_next_enemy_attack():
 
 
 def test_enemy_shield_survives_the_player_turn_and_expires_at_enemy_next_turn():
-    battle = make_battle([card("strike", 0, dmg(3))], enemy_deck=[])
+    battle = make_battle([card("strike", 0, dmg(3))], enemy_actions=[])
     battle.start()
     battle.enemy.statuses.append(Status(id="shield", name="護盾", stacks=5, duration=0))
     battle.play_card(0)
@@ -330,7 +339,7 @@ def test_enemy_shield_survives_the_player_turn_and_expires_at_enemy_next_turn():
 
 
 def test_shield_absorbs_several_hits_in_one_action_then_is_gone():
-    battle = make_battle([card("guard", 0, shield(5))], enemy_deck=[card("double", 0, dmg(3), dmg(3))])
+    battle = make_battle([card("guard", 0, shield(5))], enemy_actions=[card("double", 0, dmg(3), dmg(3))])
     battle.start()
     battle.play_card(0)
     battle.end_turn()
@@ -402,7 +411,7 @@ def test_new_status_works_from_data_alone_without_engine_changes():
 def test_custom_outgoing_multiplier_is_applied_from_data():
     defs = load_statuses(STATUSES_FILE)
     defs["frail"] = StatusDef(id="frail", name="脆弱", outgoing_damage_multiplier=Fraction(1, 2))
-    battle = make_battle([card("cut", 0, apply("frail", 1, 1))], enemy_deck=[card("hit", 0, dmg(7))], statuses=defs)
+    battle = make_battle([card("cut", 0, apply("frail", 1, 1))], enemy_actions=[card("hit", 0, dmg(7))], statuses=defs)
     battle.start()
     battle.play_card(0)
     battle.end_turn()

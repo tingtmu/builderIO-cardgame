@@ -11,7 +11,19 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
-from cardgame.models import Card, CardDataError, Effect, EffectKind, Status, StatusDef, StatusLifetime, Unit
+from cardgame.models import (
+    AIAction,
+    AIDef,
+    Card,
+    CardDataError,
+    Effect,
+    EffectKind,
+    EnemyAIKind,
+    Status,
+    StatusDef,
+    StatusLifetime,
+    Unit,
+)
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 CARDS_FILE = DATA_DIR / "cards.json"
@@ -147,15 +159,52 @@ def parse_status(raw: Any) -> Status:
     )
 
 
+_AI_KEYS = frozenset({"type", "actions", "reveal_intent"})
+
+
+def _resolve_card(card_id: Any, cards: dict[str, Card], where: str) -> Card:
+    if not isinstance(card_id, str) or card_id not in cards:
+        raise CardDataError(f"{where}: references unknown card {card_id!r}")
+    return cards[card_id]
+
+
+def parse_ai(raw: Any, cards: dict[str, Card], where: str) -> AIDef:
+    """Parse an enemy ``ai`` object. Actions are card ids, or ``{card, weight}``."""
+    obj = _as_object(raw, f"{where}.ai")
+    unknown = set(obj) - _AI_KEYS
+    if unknown:
+        raise CardDataError(f"{where}.ai: unknown keys {sorted(unknown)}")
+    type_raw = _get(obj, "type", f"{where}.ai")
+    try:
+        kind = EnemyAIKind(type_raw)
+    except ValueError as exc:
+        raise CardDataError(f"{where}.ai: unknown type {type_raw!r}") from exc
+    actions: list[AIAction] = []
+    for entry in _as_list(_get(obj, "actions", f"{where}.ai"), f"{where}.ai.actions"):
+        if isinstance(entry, str):
+            actions.append(AIAction(card=_resolve_card(entry, cards, where)))
+            continue
+        action_obj = _as_object(entry, f"{where}.ai action")
+        card = _resolve_card(_get(action_obj, "card", f"{where}.ai action"), cards, where)
+        weight = action_obj.get("weight", 1)
+        if set(action_obj) - {"card", "weight"}:
+            raise CardDataError(f"{where}.ai action: unknown keys {sorted(set(action_obj) - {'card', 'weight'})}")
+        actions.append(AIAction(card=card, weight=weight))
+    reveal = obj.get("reveal_intent", False)
+    return AIDef(kind=kind, actions=tuple(actions), reveal_intent=reveal)
+
+
 def parse_unit(raw: Any, cards: dict[str, Card]) -> Unit:
     obj = _as_object(raw, "unit")
     unit_id = _get(obj, "id", "unit")
     where = f"unit {unit_id!r}"
+    # Players draw from a deck; enemies act from an ``ai`` pattern and have no deck.
     deck: list[Card] = []
-    for card_id in _as_list(_get(obj, "deck", where), f"{where}.deck"):
-        if card_id not in cards:
-            raise CardDataError(f"{where}: deck references unknown card {card_id!r}")
-        deck.append(cards[card_id])
+    for card_id in _as_list(obj.get("deck", []), f"{where}.deck"):
+        deck.append(_resolve_card(card_id, cards, where))
+    ai = parse_ai(obj["ai"], cards, where) if "ai" in obj else None
+    if ai is not None and deck:
+        raise CardDataError(f"{where}: a unit has either a deck or an ai, not both")
     statuses = [parse_status(s) for s in _as_list(obj.get("statuses", []), f"{where}.statuses")]
     return Unit(
         id=unit_id,
@@ -164,6 +213,7 @@ def parse_unit(raw: Any, cards: dict[str, Card]) -> Unit:
         max_energy=_get(obj, "max_energy", where),
         deck=deck,
         statuses=statuses,
+        ai=ai,
     )
 
 

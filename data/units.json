@@ -6,5 +6,32 @@
     "max_energy": 3,
     "deck": ["strike", "strike", "defend", "defend", "venom"],
     "statuses": []
+  },
+  {
+    "id": "slime",
+    "name": "史萊姆",
+    "max_hp": 40,
+    "max_energy": 1,
+    "ai": {
+      "type": "sequence",
+      "reveal_intent": true,
+      "actions": ["strike", "defend"]
+    },
+    "statuses": []
+  },
+  {
+    "id": "cultist",
+    "name": "邪教徒",
+    "max_hp": 36,
+    "max_energy": 1,
+    "ai": {
+      "type": "weighted",
+      "reveal_intent": false,
+      "actions": [
+        {"card": "venom", "weight": 2},
+        {"card": "strike", "weight": 3}
+      ]
+    },
+    "statuses": []
   }
 ]
