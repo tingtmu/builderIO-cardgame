@@ -1,0 +1,24 @@
+[
+  {
+    "id": "poison",
+    "name": "中毒",
+    "description": "At each settle, loses HP equal to its stacks (bypasses shield), then loses 1 stack. Removed when stacks or duration reach 0.",
+    "damage_per_stack": 1,
+    "stacks_lost_per_turn": 1,
+    "lifetime": "turns"
+  },
+  {
+    "id": "weak",
+    "name": "虛弱",
+    "description": "Damage dealt by the afflicted unit is multiplied by 0.75, rounded down. Stacks do not change the multiplier. Duration counts down at each settle.",
+    "outgoing_damage_multiplier": 0.75,
+    "lifetime": "turns"
+  },
+  {
+    "id": "shield",
+    "name": "護盾",
+    "description": "Stacks absorb incoming damage. Any remaining stacks expire when the owner's next turn begins, so a shield covers the opponent's action in between.",
+    "absorbs_damage": true,
+    "lifetime": "owner_turn_start"
+  }
+]

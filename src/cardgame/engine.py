@@ -1,9 +1,14 @@
-"""Turn flow for one battle (M2).
+"""Turn flow and status effects for one battle (M2 + M3).
 
 Turn order::
 
     draw -> player plays cards -> resolve effects -> enemy acts
-         -> status settle (placeholder) -> next turn
+         -> status settle -> next turn
+
+Status behaviour (ticks, stack loss, lifetime, damage multipliers, absorption)
+is data in ``data/statuses.json``. The engine only implements the generic
+rules for those fields, so adding a status is a data change plus, at most, a
+new handler in ``EFFECT_HANDLERS``.
 
 All randomness comes from a ``random.Random`` seeded in the constructor, so the
 same seed and the same sequence of actions always produce the same battle.
@@ -14,15 +19,26 @@ never looks at card ids, so adding a card is a data change only.
 
 from __future__ import annotations
 
+import math
 import random
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from fractions import Fraction
 
-from cardgame.models import Card, Effect, EffectKind, Status, Unit
+from cardgame.loader import load_statuses
+from cardgame.models import (
+    Card,
+    CardDataError,
+    Effect,
+    EffectKind,
+    Status,
+    StatusDef,
+    StatusLifetime,
+    Unit,
+)
 
 HAND_SIZE = 5
 SHIELD_STATUS_ID = "shield"
-SHIELD_STATUS_NAME = "護盾"
 
 
 class BattleError(RuntimeError):
@@ -46,16 +62,27 @@ class Event:
 
 
 class Battle:
-    def __init__(self, player: Unit, enemy: Unit, seed: int, hand_size: int = HAND_SIZE) -> None:
+    def __init__(
+        self,
+        player: Unit,
+        enemy: Unit,
+        seed: int,
+        hand_size: int = HAND_SIZE,
+        statuses: Mapping[str, StatusDef] | None = None,
+    ) -> None:
         self.player = player
         self.enemy = enemy
         self.rng = random.Random(seed)
         self.hand_size = hand_size
+        self.status_defs: Mapping[str, StatusDef] = load_statuses() if statuses is None else statuses
         self.turn = 0
         self.hand: list[Card] = []
         self.draw_pile: list[Card] = list(player.deck)
         self.discard_pile: list[Card] = []
         self.events: list[Event] = []
+        for unit in (player, enemy):
+            for status in unit.statuses:
+                self.status_def(status.id)  # fail early on unknown initial statuses
         self.rng.shuffle(self.draw_pile)
 
     # ----- state queries -------------------------------------------------
@@ -71,6 +98,12 @@ class Battle:
         if self.player.hp == 0:
             return self.enemy.id
         return None
+
+    def status_def(self, status_id: str) -> StatusDef:
+        try:
+            return self.status_defs[status_id]
+        except KeyError:
+            raise CardDataError(f"unknown status id {status_id!r}") from None
 
     # ----- actions -------------------------------------------------------
 
@@ -101,6 +134,7 @@ class Battle:
         # Unplayed cards go to the discard pile so the hand resets each turn.
         self.discard_pile.extend(self.hand)
         self.hand.clear()
+        self._begin_enemy_turn()
         self._enemy_act()
         if self.over:
             return
@@ -119,8 +153,12 @@ class Battle:
 
     def _begin_turn(self) -> None:
         self.turn += 1
+        self._expire_owner_turn_start(self.player)
         self.player.energy = self.player.max_energy
         self._draw(self.hand_size)
+
+    def _begin_enemy_turn(self) -> None:
+        self._expire_owner_turn_start(self.enemy)
 
     def _enemy_act(self) -> None:
         # Placeholder AI (real enemy AI is M4): refill energy, then play one
@@ -137,8 +175,26 @@ class Battle:
             self._resolve(effect, source=enemy, target=self.player)
 
     def _settle_statuses(self) -> None:
-        # Placeholder for M3: tick status durations and apply per-turn effects.
         self._log("status_settle", self.player.id)
+        # Fixed order (player, then enemy) and list order keep this deterministic.
+        for unit in (self.player, self.enemy):
+            for status in list(unit.statuses):
+                self._tick_status(unit, status)
+                if self.over:
+                    return
+
+    def _tick_status(self, unit: Unit, status: Status) -> None:
+        definition = self.status_def(status.id)
+        if definition.damage_per_stack and status.stacks:
+            lost = self._lose_hp(unit, status.stacks * definition.damage_per_stack)
+            self._log("status_damage", unit.id, target=unit.id, amount=lost, detail=status.id)
+        if definition.stacks_lost_per_turn:
+            status.stacks = max(0, status.stacks - definition.stacks_lost_per_turn)
+        timed = definition.lifetime is StatusLifetime.TURNS
+        if timed:
+            status.duration = max(0, status.duration - 1)
+        if status.stacks == 0 or (timed and status.duration == 0):
+            self._remove_status(unit, status)
 
     # ----- helpers -------------------------------------------------------
 
@@ -166,35 +222,63 @@ class Battle:
     ) -> None:
         self.events.append(Event(self.turn, actor, kind, target, amount, detail))
 
+    def _find_status(self, unit: Unit, status_id: str) -> Status | None:
+        for status in unit.statuses:
+            if status.id == status_id:
+                return status
+        return None
 
-def _shield_status(unit: Unit) -> Status | None:
-    for status in unit.statuses:
-        if status.id == SHIELD_STATUS_ID:
-            return status
-    return None
+    def _add_status(self, unit: Unit, status_id: str, stacks: int, duration: int) -> None:
+        """Apply a status. Same id adds stacks and refreshes duration to the max."""
+        definition = self.status_def(status_id)
+        existing = self._find_status(unit, status_id)
+        if existing is None:
+            unit.statuses.append(Status(id=status_id, name=definition.name, stacks=stacks, duration=duration))
+        else:
+            existing.stacks += stacks
+            existing.duration = max(existing.duration, duration)
+
+    def _remove_status(self, unit: Unit, status: Status) -> None:
+        unit.statuses.remove(status)
+        self._log("status_expire", unit.id, detail=status.id)
+
+    def _expire_owner_turn_start(self, unit: Unit) -> None:
+        for status in list(unit.statuses):
+            if self.status_def(status.id).lifetime is StatusLifetime.OWNER_TURN_START:
+                self._remove_status(unit, status)
+
+    def _outgoing_damage(self, source: Unit, amount: int) -> int:
+        multiplier = Fraction(1)
+        for status in source.statuses:
+            multiplier *= self.status_def(status.id).outgoing_damage_multiplier
+        return math.floor(amount * multiplier)
+
+    def _lose_hp(self, unit: Unit, amount: int) -> int:
+        lost = min(unit.hp, amount)
+        unit.hp -= lost
+        return lost
 
 
 def _resolve_damage(battle: Battle, effect: Effect, source: Unit, target: Unit) -> None:
-    shield = _shield_status(target)
+    amount = battle._outgoing_damage(source, effect.amount)
     absorbed = 0
-    if shield is not None:
-        absorbed = min(shield.stacks, effect.amount)
-        shield.stacks -= absorbed
-        if shield.stacks == 0:
-            target.statuses.remove(shield)
-    lost = effect.amount - absorbed
+    for status in list(target.statuses):
+        if not battle.status_def(status.id).absorbs_damage:
+            continue
+        taken = min(status.stacks, amount - absorbed)
+        status.stacks -= taken
+        absorbed += taken
+        if status.stacks == 0:
+            battle._remove_status(target, status)
+    lost = amount - absorbed
     target.hp = max(0, target.hp - lost)
     battle._log("damage", source.id, target=target.id, amount=lost)
 
 
 def _resolve_shield(battle: Battle, effect: Effect, source: Unit, target: Unit) -> None:
-    # Shield always goes to the unit that played it. Its lifetime is M3's job,
-    # so duration stays 0 here.
-    shield = _shield_status(source)
-    if shield is None:
-        source.statuses.append(Status(id=SHIELD_STATUS_ID, name=SHIELD_STATUS_NAME, stacks=effect.amount))
-    else:
-        shield.stacks += effect.amount
+    # Shield always goes to the unit that played it. Its lifetime comes from
+    # data/statuses.json (owner_turn_start), so no duration is set here.
+    battle._add_status(source, SHIELD_STATUS_ID, stacks=effect.amount, duration=0)
     battle._log("shield", source.id, target=source.id, amount=effect.amount)
 
 
@@ -205,7 +289,7 @@ def _resolve_draw(battle: Battle, effect: Effect, source: Unit, target: Unit) ->
 
 
 def _resolve_apply_status(battle: Battle, effect: Effect, source: Unit, target: Unit) -> None:
-    # Recorded only. Applying and ticking statuses is M3.
+    battle._add_status(target, effect.status, stacks=effect.amount, duration=effect.duration)
     battle._log(
         "apply_status",
         source.id,
