@@ -98,6 +98,25 @@ def test_unit_accepts_explicit_hp_and_energy():
     assert unit.energy == 0
 
 
+def test_unit_none_hp_and_energy_mean_full():
+    unit = Unit(id="p", name="玩家", max_hp=80, max_energy=3, hp=None, energy=None)
+    assert unit.hp == 80
+    assert unit.energy == 3
+
+
+def test_unit_allows_zero_hp_and_energy():
+    unit = Unit(id="p", name="玩家", max_hp=80, max_energy=3, hp=0, energy=0)
+    assert unit.hp == 0
+    assert unit.energy == 0
+
+
+def test_unit_no_longer_treats_negative_one_as_sentinel():
+    with pytest.raises(CardDataError):
+        Unit(id="p", name="玩家", max_hp=80, max_energy=3, hp=-1)
+    with pytest.raises(CardDataError):
+        Unit(id="p", name="玩家", max_hp=80, max_energy=3, energy=-1)
+
+
 def test_unit_rejects_hp_or_energy_above_max():
     with pytest.raises(CardDataError):
         Unit(id="p", name="玩家", max_hp=80, max_energy=3, hp=81)
