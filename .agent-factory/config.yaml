@@ -32,8 +32,15 @@ workflows:
     enabled: true
     schedule: manual
     repositories: [app]
-    approve: {mode: disabled}
-    merge: {mode: disabled}
+    approve:
+      mode: criteria
+      allow: [`uv run pytest` green on the exact head, run by the reviewer in a clean checkout (no CI: token lacks workflow scope), diff within linked issue scope, no blocking review findings, author is the factory agent]
+      stop: [failing or unrun pytest, new dependency, scope beyond spec.md, edits to .agent-factory/ or .github/ unrelated to the issue]
+    merge:
+      mode: criteria
+      method: squash
+      allow: [approved per above, pytest green on unchanged head, PR links its issue]
+      stop: [any stop condition above]
   babysit-pr:
     enabled: true
     schedule: manual
@@ -42,7 +49,7 @@ workflows:
   ship:
     enabled: true
     publish: {mode: criteria, allow: [push branch, open PR after pytest passes]}
-    merge: {mode: disabled}        # human merges
+    merge: {mode: criteria}        # same criteria as review-prs.merge (user authorized full auto 2026-11-14)
     deploy: {mode: disabled}
   human-digest: {enabled: true, schedule: manual, repositories: [app], sources: [milestones]}
   lookback: {enabled: false}
