@@ -1,0 +1,26 @@
+[
+  {
+    "id": "strike",
+    "name": "攻擊",
+    "cost": 1,
+    "effects": [
+      {"kind": "damage", "amount": 6}
+    ]
+  },
+  {
+    "id": "defend",
+    "name": "防禦",
+    "cost": 1,
+    "effects": [
+      {"kind": "shield", "amount": 5}
+    ]
+  },
+  {
+    "id": "venom",
+    "name": "中毒",
+    "cost": 1,
+    "effects": [
+      {"kind": "apply_status", "status": "poison", "stacks": 3, "duration": 3}
+    ]
+  }
+]
