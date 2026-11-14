@@ -7,14 +7,29 @@ about specific card ids.
 from __future__ import annotations
 
 import json
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
-from cardgame.models import Card, CardDataError, Effect, EffectKind, Status, Unit
+from cardgame.models import Card, CardDataError, Effect, EffectKind, Status, StatusDef, StatusLifetime, Unit
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 CARDS_FILE = DATA_DIR / "cards.json"
 UNITS_FILE = DATA_DIR / "units.json"
+STATUSES_FILE = DATA_DIR / "statuses.json"
+
+_STATUS_DEF_KEYS = frozenset(
+    {
+        "id",
+        "name",
+        "description",
+        "damage_per_stack",
+        "stacks_lost_per_turn",
+        "lifetime",
+        "outgoing_damage_multiplier",
+        "absorbs_damage",
+    }
+)
 
 
 def _read_json(path: Path) -> Any:
@@ -81,6 +96,45 @@ def load_cards(path: Path = CARDS_FILE) -> dict[str, Card]:
             raise CardDataError(f"duplicate card id {card.id!r} in {path}")
         cards[card.id] = card
     return cards
+
+
+def parse_status_def(raw: Any) -> StatusDef:
+    obj = _as_object(raw, "status definition")
+    status_id = _get(obj, "id", "status definition")
+    where = f"status {status_id!r}"
+    unknown = set(obj) - _STATUS_DEF_KEYS
+    if unknown:
+        raise CardDataError(f"{where}: unknown keys {sorted(unknown)}")
+    lifetime_raw = obj.get("lifetime", StatusLifetime.TURNS.value)
+    try:
+        lifetime = StatusLifetime(lifetime_raw)
+    except ValueError as exc:
+        raise CardDataError(f"{where}: unknown lifetime {lifetime_raw!r}") from exc
+    multiplier = obj.get("outgoing_damage_multiplier", 1)
+    if isinstance(multiplier, bool) or not isinstance(multiplier, (int, float)):
+        raise CardDataError(f"{where}: outgoing_damage_multiplier must be a number, got {multiplier!r}")
+    return StatusDef(
+        id=status_id,
+        name=_get(obj, "name", where),
+        description=obj.get("description", ""),
+        damage_per_stack=obj.get("damage_per_stack", 0),
+        stacks_lost_per_turn=obj.get("stacks_lost_per_turn", 0),
+        lifetime=lifetime,
+        # str() keeps the decimal literal exact (0.75 -> 3/4) instead of a binary float.
+        outgoing_damage_multiplier=Fraction(str(multiplier)),
+        absorbs_damage=obj.get("absorbs_damage", False),
+    )
+
+
+def load_statuses(path: Path = STATUSES_FILE) -> dict[str, StatusDef]:
+    """Return all status definitions keyed by id. Duplicate ids are an error."""
+    statuses: dict[str, StatusDef] = {}
+    for raw in _as_list(_read_json(path), f"{path}"):
+        definition = parse_status_def(raw)
+        if definition.id in statuses:
+            raise CardDataError(f"duplicate status id {definition.id!r} in {path}")
+        statuses[definition.id] = definition
+    return statuses
 
 
 def parse_status(raw: Any) -> Status:

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from fractions import Fraction
 
 
 class CardDataError(ValueError):
@@ -21,6 +22,13 @@ class EffectKind(str, Enum):
     APPLY_STATUS = "apply_status"
 
 
+class StatusLifetime(str, Enum):
+    # Duration counts down at each status settle; removed when it reaches 0.
+    TURNS = "turns"
+    # Duration is ignored; removed when the owner's next turn begins.
+    OWNER_TURN_START = "owner_turn_start"
+
+
 def _require_non_empty_str(value: object, field_name: str) -> None:
     if not isinstance(value, str) or not value.strip():
         raise CardDataError(f"{field_name} must be a non-empty string, got {value!r}")
@@ -32,6 +40,11 @@ def _require_int(value: object, field_name: str, minimum: int) -> None:
         raise CardDataError(f"{field_name} must be an integer, got {value!r}")
     if value < minimum:
         raise CardDataError(f"{field_name} must be >= {minimum}, got {value}")
+
+
+def _require_bool(value: object, field_name: str) -> None:
+    if not isinstance(value, bool):
+        raise CardDataError(f"{field_name} must be a boolean, got {value!r}")
 
 
 @dataclass(frozen=True)
@@ -94,6 +107,45 @@ class Status:
         _require_non_empty_str(self.name, "status.name")
         _require_int(self.stacks, "status.stacks", minimum=0)
         _require_int(self.duration, "status.duration", minimum=0)
+
+
+@dataclass(frozen=True)
+class StatusDef:
+    """Behaviour of one status id, read from ``data/statuses.json``.
+
+    - ``damage_per_stack``: HP lost by the afflicted unit at each settle, per
+      stack. This is direct HP loss and bypasses absorbing statuses.
+    - ``stacks_lost_per_turn``: stacks removed at each settle.
+    - ``lifetime``: see ``StatusLifetime``.
+    - ``outgoing_damage_multiplier``: scales damage dealt by the afflicted
+      unit, rounded down. Stored as an exact ``Fraction``.
+    - ``absorbs_damage``: stacks soak up incoming damage before HP is lost.
+    """
+
+    id: str
+    name: str
+    damage_per_stack: int = 0
+    stacks_lost_per_turn: int = 0
+    lifetime: StatusLifetime = StatusLifetime.TURNS
+    outgoing_damage_multiplier: Fraction = Fraction(1)
+    absorbs_damage: bool = False
+    description: str = ""
+
+    def __post_init__(self) -> None:
+        _require_non_empty_str(self.id, "status.id")
+        _require_non_empty_str(self.name, "status.name")
+        _require_int(self.damage_per_stack, f"status {self.id!r} damage_per_stack", minimum=0)
+        _require_int(self.stacks_lost_per_turn, f"status {self.id!r} stacks_lost_per_turn", minimum=0)
+        if not isinstance(self.lifetime, StatusLifetime):
+            raise CardDataError(f"status {self.id!r} has unknown lifetime {self.lifetime!r}")
+        if not isinstance(self.outgoing_damage_multiplier, Fraction) or self.outgoing_damage_multiplier < 0:
+            raise CardDataError(
+                f"status {self.id!r} outgoing_damage_multiplier must be a non-negative number, "
+                f"got {self.outgoing_damage_multiplier!r}"
+            )
+        _require_bool(self.absorbs_damage, f"status {self.id!r} absorbs_damage")
+        if not isinstance(self.description, str):
+            raise CardDataError(f"status {self.id!r} description must be a string")
 
 
 @dataclass
