@@ -1,0 +1,60 @@
+version: 1
+timezone: Asia/Taipei
+
+sources:
+  - id: milestones
+    provider: github
+    scope: tingtmu/builderIO-cardgame   # GitHub Issues labeled "milestone"
+    filter: "is:issue is:open label:milestone"
+
+repositories:
+  - id: app
+    provider: github
+    remote: tingtmu/builderIO-cardgame
+    default_branch: main
+
+runtime:
+  model: haiku            # request: use Haiku everywhere to save tokens
+  worktree: automation-owned, one per issue
+
+workflows:
+  collect:
+    enabled: true
+    schedule: manual      # no scheduled jobs yet
+    sources: [milestones]
+    implement:
+      mode: criteria
+      allow: [issues labeled "milestone" that are in spec.md scope]
+      stop: [spec ambiguity, scope beyond spec.md, new dependencies beyond pytest]
+    reply: {mode: disabled}
+    close: {mode: disabled}
+  review-prs:
+    enabled: true
+    schedule: manual
+    repositories: [app]
+    approve: {mode: disabled}
+    merge: {mode: disabled}
+  babysit-pr:
+    enabled: true
+    schedule: manual
+    fix_review_findings: criteria   # in-scope, tests must pass
+    merge: {mode: disabled}
+  ship:
+    enabled: true
+    publish: {mode: criteria, allow: [push branch, open PR after pytest passes]}
+    merge: {mode: disabled}        # human merges
+    deploy: {mode: disabled}
+  human-digest: {enabled: true, schedule: manual, repositories: [app], sources: [milestones]}
+  lookback: {enabled: false}
+  watchdog: {enabled: false}
+  recover: {mode: disabled}
+
+skill_prompts:
+  factory-collect: |
+    Python project managed with uv; tests with pytest (`uv run pytest`).
+    Pure-logic engine, no UI. Cards/effects defined in JSON data files;
+    adding a card must never require engine code changes.
+    All randomness uses a fixed seed (reproducible). Every feature needs unit tests.
+    One issue = one branch = one PR; branch name `factory/<issue-number>-<slug>`.
+  factory-ship: |
+    PR body links the issue ("Closes #N") and shows the pytest result.
