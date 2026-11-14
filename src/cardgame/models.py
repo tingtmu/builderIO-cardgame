@@ -22,6 +22,13 @@ class EffectKind(str, Enum):
     APPLY_STATUS = "apply_status"
 
 
+class EnemyAIKind(str, Enum):
+    # Actions are used in order and the list repeats.
+    SEQUENCE = "sequence"
+    # Each turn one action is picked at random, weighted, using the battle's seeded rng.
+    WEIGHTED = "weighted"
+
+
 class StatusLifetime(str, Enum):
     # Duration counts down at each status settle; removed when it reaches 0.
     TURNS = "turns"
@@ -73,6 +80,46 @@ class Effect:
                 raise CardDataError(f"effect.status is only valid for apply_status, not {self.kind.value}")
             if self.duration != 0:
                 raise CardDataError(f"effect.duration is only valid for apply_status, not {self.kind.value}")
+
+
+@dataclass(frozen=True)
+class AIAction:
+    """One card an enemy may play, with its weight (used by weighted AI only)."""
+
+    card: Card
+    weight: int = 1
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.card, Card):
+            raise CardDataError("ai action card must be a Card")
+        _require_int(self.weight, "ai action weight", minimum=1)
+
+
+@dataclass(frozen=True)
+class AIDef:
+    """Action pattern of an enemy, read from ``data/units.json``.
+
+    - ``kind``: ``sequence`` cycles through ``actions`` in order; ``weighted``
+      picks one action per turn using the seeded rng and the weights.
+    - ``reveal_intent``: when True the player can read the next action via
+      ``Battle.enemy_intent`` before ending the turn.
+    """
+
+    kind: EnemyAIKind
+    actions: tuple[AIAction, ...]
+    reveal_intent: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.kind, EnemyAIKind):
+            raise CardDataError(f"unknown enemy ai type: {self.kind!r}")
+        if not self.actions:
+            raise CardDataError("enemy ai must have at least one action")
+        for action in self.actions:
+            if not isinstance(action, AIAction):
+                raise CardDataError("enemy ai actions must be AIAction objects")
+            if self.kind is EnemyAIKind.SEQUENCE and action.weight != 1:
+                raise CardDataError("ai action weight is only valid for type 'weighted'")
+        _require_bool(self.reveal_intent, "ai reveal_intent")
 
 
 @dataclass(frozen=True)
@@ -160,6 +207,8 @@ class Unit:
     hp: int | None = None
     energy: int | None = None
     statuses: list[Status] = field(default_factory=list)
+    # Enemies have an action pattern instead of drawing from a deck.
+    ai: AIDef | None = None
 
     def __post_init__(self) -> None:
         _require_non_empty_str(self.id, "unit.id")
@@ -177,3 +226,10 @@ class Unit:
             raise CardDataError(f"unit {self.id!r} hp {self.hp} exceeds max_hp {self.max_hp}")
         if self.energy > self.max_energy:
             raise CardDataError(f"unit {self.id!r} energy {self.energy} exceeds max_energy {self.max_energy}")
+        if self.ai is not None:
+            for action in self.ai.actions:
+                if action.card.cost > self.max_energy:
+                    raise CardDataError(
+                        f"unit {self.id!r} ai action {action.card.id!r} costs {action.card.cost}, "
+                        f"more than max_energy {self.max_energy}"
+                    )

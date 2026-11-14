@@ -4,7 +4,7 @@ import pytest
 
 from cardgame.engine import EFFECT_HANDLERS, HAND_SIZE, SHIELD_STATUS_ID, Battle, BattleError
 from cardgame.loader import CARDS_FILE, UNITS_FILE, load_cards, load_units
-from cardgame.models import Card, Effect, EffectKind, Unit
+from cardgame.models import AIAction, AIDef, Card, CardDataError, Effect, EffectKind, EnemyAIKind, Unit
 
 
 def dmg(amount):
@@ -27,8 +27,16 @@ def card(card_id, cost, *effects):
     return Card(id=card_id, name=card_id, cost=cost, effects=tuple(effects))
 
 
-def unit(unit_id, max_hp=50, max_energy=3, deck=()):
-    return Unit(id=unit_id, name=unit_id, max_hp=max_hp, max_energy=max_energy, deck=list(deck))
+def sequence_ai(cards, reveal_intent=False):
+    """Enemy AI that plays ``cards`` in order, repeating. None when there are no cards."""
+    if not cards:
+        return None
+    actions = tuple(AIAction(card=c) for c in cards)
+    return AIDef(kind=EnemyAIKind.SEQUENCE, actions=actions, reveal_intent=reveal_intent)
+
+
+def unit(unit_id, max_hp=50, max_energy=3, deck=(), ai=None):
+    return Unit(id=unit_id, name=unit_id, max_hp=max_hp, max_energy=max_energy, deck=list(deck), ai=ai)
 
 
 def hand_ids(battle):
@@ -39,9 +47,9 @@ def kinds(battle, turn=None):
     return [e.kind for e in battle.events if turn is None or e.turn == turn]
 
 
-def make_battle(player_deck, enemy_deck=(), seed=0, hand_size=HAND_SIZE, **unit_kwargs):
+def make_battle(player_deck, enemy_actions=(), seed=0, hand_size=HAND_SIZE, **unit_kwargs):
     player = unit("player", deck=player_deck, **unit_kwargs)
-    enemy = unit("enemy", max_hp=30, max_energy=2, deck=enemy_deck)
+    enemy = unit("enemy", max_hp=30, max_energy=2, ai=sequence_ai(enemy_actions))
     return Battle(player, enemy, seed=seed, hand_size=hand_size)
 
 
@@ -176,8 +184,7 @@ def test_damage_never_takes_hp_below_zero_and_ends_battle():
 
 
 def test_shield_is_granted_to_the_player_and_absorbs_damage_first():
-    battle = make_battle([card("guard", 0, shield(5))])
-    battle.enemy.deck = [card("hit", 0, dmg(8))]
+    battle = make_battle([card("guard", 0, shield(5))], enemy_actions=[card("hit", 0, dmg(8))])
     battle.start()
     battle.play_card(0)
     assert [(s.id, s.stacks) for s in battle.player.statuses] == [(SHIELD_STATUS_ID, 5)]
@@ -196,8 +203,7 @@ def test_shield_stacks_add_up():
 
 
 def test_damage_larger_than_shield_leaves_remaining_shield_gone_and_hp_reduced():
-    battle = make_battle([card("guard", 0, shield(2))])
-    battle.enemy.deck = [card("hit", 0, dmg(5))]
+    battle = make_battle([card("guard", 0, shield(2))], enemy_actions=[card("hit", 0, dmg(5))])
     battle.start()
     battle.play_card(0)
     battle.end_turn()
@@ -270,7 +276,6 @@ def test_engine_works_with_arbitrary_card_ids(tmp_path):
     )
     custom = load_cards(path)["zz_custom"]
     battle = make_battle([custom] * 3, hand_size=1)
-    battle.enemy.deck = []
     battle.start()
     battle.play_card(0)
     assert battle.enemy.hp == battle.enemy.max_hp - 2
@@ -282,7 +287,7 @@ def test_engine_works_with_arbitrary_card_ids(tmp_path):
 
 
 def test_end_turn_runs_enemy_then_status_settle_then_next_draw():
-    battle = make_battle([card("a", 0, dmg(1))] * 6, enemy_deck=[card("e", 0, dmg(1))], hand_size=2)
+    battle = make_battle([card("a", 0, dmg(1))] * 6, enemy_actions=[card("e", 0, dmg(1))], hand_size=2)
     battle.start()
     battle.events.clear()
     battle.end_turn()
@@ -302,24 +307,20 @@ def test_unplayed_hand_is_discarded_at_end_of_turn():
 
 
 def test_enemy_damage_hits_player():
-    battle = make_battle([card("a", 0, dmg(1))], enemy_deck=[card("e", 0, dmg(6))])
+    battle = make_battle([card("a", 0, dmg(1))], enemy_actions=[card("e", 0, dmg(6))])
     battle.start()
     battle.end_turn()
     assert battle.player.hp == battle.player.max_hp - 6
 
 
-def test_enemy_only_plays_cards_its_energy_can_pay_for():
-    # Enemy has 2 energy; the 3-cost card can never be played.
-    battle = make_battle([card("a", 0, dmg(1))], enemy_deck=[card("pricey", 3, dmg(40))])
-    battle.start()
-    for _ in range(5):
-        battle.end_turn()
-    assert "enemy_play" not in kinds(battle)
-    assert battle.player.hp == battle.player.max_hp
+def test_enemy_action_it_cannot_afford_is_rejected_when_the_unit_is_built():
+    # Enemy has 2 energy; the 3-cost card can never be played, so the data is invalid.
+    with pytest.raises(CardDataError):
+        make_battle([card("a", 0, dmg(1))], enemy_actions=[card("pricey", 3, dmg(40))])
 
 
 def test_enemy_with_empty_deck_does_nothing():
-    battle = make_battle([card("a", 0, dmg(1))], enemy_deck=[])
+    battle = make_battle([card("a", 0, dmg(1))], enemy_actions=[])
     battle.start()
     battle.end_turn()
     assert "enemy_play" not in kinds(battle)
@@ -327,7 +328,7 @@ def test_enemy_with_empty_deck_does_nothing():
 
 
 def test_enemy_energy_refills_each_turn():
-    battle = make_battle([card("a", 0, dmg(1))], enemy_deck=[card("e", 2, dmg(1))])
+    battle = make_battle([card("a", 0, dmg(1))], enemy_actions=[card("e", 2, dmg(1))])
     battle.start()
     battle.end_turn()
     battle.end_turn()
@@ -335,19 +336,25 @@ def test_enemy_energy_refills_each_turn():
     assert kinds(battle).count("enemy_play") == 2
 
 
-def test_enemy_card_is_chosen_with_the_seeded_rng():
-    enemy_deck = [card("e1", 0, dmg(1)), card("e2", 0, dmg(2)), card("e3", 0, dmg(3))]
-    picks = []
-    for seed in range(10):
-        battle = make_battle([card("a", 0, dmg(1))], enemy_deck=enemy_deck, seed=seed)
+def test_enemy_weighted_pick_is_reproducible_for_the_same_seed():
+    actions = (AIAction(card("e1", 0, dmg(1)), weight=1), AIAction(card("e2", 0, dmg(2)), weight=5))
+    ai = AIDef(kind=EnemyAIKind.WEIGHTED, actions=actions)
+
+    def picks(seed):
+        player = unit("player", deck=[card("a", 0, dmg(1))] * 5)
+        enemy = unit("enemy", max_hp=300, max_energy=2, ai=ai)
+        battle = Battle(player, enemy, seed=seed)
         battle.start()
-        battle.end_turn()
-        picks.append(next(e.detail for e in battle.events if e.kind == "enemy_play"))
-    assert len(set(picks)) > 1
+        for _ in range(12):
+            battle.end_turn()
+        return [e.detail for e in battle.events if e.kind == "enemy_play"]
+
+    assert picks(7) == picks(7)
+    assert len(set(picks(7))) > 1
 
 
 def test_battle_ends_when_enemy_dies_so_enemy_does_not_act():
-    battle = make_battle([card("finish", 0, dmg(30))], enemy_deck=[card("e", 0, dmg(1))])
+    battle = make_battle([card("finish", 0, dmg(30))], enemy_actions=[card("e", 0, dmg(1))])
     battle.start()
     battle.play_card(0)
     assert battle.winner == "player"
@@ -357,7 +364,7 @@ def test_battle_ends_when_enemy_dies_so_enemy_does_not_act():
 
 
 def test_player_death_during_enemy_turn_ends_battle_with_enemy_winner():
-    battle = make_battle([card("a", 0, dmg(1))], enemy_deck=[card("e", 0, dmg(999))])
+    battle = make_battle([card("a", 0, dmg(1))], enemy_actions=[card("e", 0, dmg(999))])
     battle.start()
     battle.end_turn()
     assert battle.player.hp == 0
@@ -409,11 +416,8 @@ def run_scripted(player, enemy, seed, max_turns=50):
 
 
 def fresh_units():
-    cards = load_cards(CARDS_FILE)
-    player = load_units(UNITS_FILE, cards)["player"]
-    enemy_deck = [cards["strike"], cards["defend"], cards["venom"]]
-    enemy = Unit(id="slime", name="slime", max_hp=40, max_energy=2, deck=enemy_deck)
-    return player, enemy
+    units = load_units(UNITS_FILE, load_cards(CARDS_FILE))
+    return units["player"], units["slime"]
 
 
 def snapshot(battle):

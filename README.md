@@ -12,6 +12,17 @@
 - 技術棧:**Python + pytest**
 - 模型:全部使用 **Haiku**(節省 token 用量)
 
+## How to run / tests
+
+需要 [uv](https://docs.astral.sh/uv/)(Python 3.12+ 由 uv 管理)。
+
+```sh
+uv run pytest
+```
+
+敵人的行動模式寫在 `data/units.json` 的 `ai` 欄位(`sequence` 依序循環,`weighted` 依權重隨機,
+由固定種子決定),`reveal_intent: true` 時玩家在結束回合前可以看到敵人下一步行動。
+
 ## Factory skills
 位於 `.claude/skills/` 與 `.agents/skills/`(`factory`、`factory-collect`、`factory-ship`、
 `factory-review-prs`、`factory-babysit-pr` 等)。
