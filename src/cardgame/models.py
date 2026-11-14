@@ -105,8 +105,8 @@ class Unit:
     max_hp: int
     max_energy: int
     deck: list[Card] = field(default_factory=list)
-    hp: int = -1
-    energy: int = -1
+    hp: int | None = None
+    energy: int | None = None
     statuses: list[Status] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -114,10 +114,10 @@ class Unit:
         _require_non_empty_str(self.name, "unit.name")
         _require_int(self.max_hp, "unit.max_hp", minimum=1)
         _require_int(self.max_energy, "unit.max_energy", minimum=0)
-        # -1 is the "not given, start full" sentinel.
-        if self.hp == -1:
+        # None means "not given": start at full HP / full energy.
+        if self.hp is None:
             self.hp = self.max_hp
-        if self.energy == -1:
+        if self.energy is None:
             self.energy = self.max_energy
         _require_int(self.hp, "unit.hp", minimum=0)
         _require_int(self.energy, "unit.energy", minimum=0)
