@@ -34,7 +34,7 @@ workflows:
     repositories: [app]
     approve:
       mode: criteria
-      allow: [`uv run pytest` green on the exact head, run by the reviewer in a clean checkout (no CI: token lacks workflow scope), diff within linked issue scope, no blocking review findings, author is the factory agent]
+      allow: [CI check "test" green on the exact head, plus `uv run pytest` green in a clean checkout, diff within linked issue scope, no blocking review findings, author is the factory agent]
       stop: [failing or unrun pytest, new dependency, scope beyond spec.md, edits to .agent-factory/ or .github/ unrelated to the issue]
     merge:
       mode: criteria
